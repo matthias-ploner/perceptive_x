@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List, Literal
+from typing import Dict, Optional, List, Literal
 
 
 class DepthConfig(BaseModel):
@@ -74,3 +74,49 @@ class ClassificationConfig(BaseModel):
     # 0 = disabled.  sigma≈1 amplifies spatially-coherent anomaly regions
     # (e.g. bent edges) and suppresses isolated noisy patches.
     smooth_sigma: float = 0.0
+
+
+class DetectionConfig(BaseModel):
+    # IDEA-Research/grounding-dino-tiny  — fast, lower accuracy
+    # IDEA-Research/grounding-dino-base  — best quality/speed balance
+    model_name: str = "IDEA-Research/grounding-dino-base"
+    device: str = "cuda"
+    box_threshold: float = 0.30   # min score for a box to be kept
+    text_threshold: float = 0.25  # min per-token score for label matching
+    # IoU threshold for greedy NMS — suppresses duplicate boxes for the same
+    # object.  Set to 1.0 to disable.
+    nms_iou_threshold: float = 0.50
+
+
+class AssemblyConfig(BaseModel):
+    detection_model: str = "IDEA-Research/grounding-dino-base"
+    device: str = "cuda"
+    box_threshold: float = 0.30
+    text_threshold: float = 0.25
+    nms_iou_threshold: float = 0.50
+    # Expected component counts: {"bolt": 4, "washer": 4, "nut": 1}
+    component_checklist: Dict[str, int] = {}
+    # Allowed deviation per component (0 = exact match required)
+    count_tolerance: int = 0
+
+
+class GigaPoseConfig(BaseModel):
+    # Path to cloned gigapose source (added to sys.path at runtime)
+    gigapose_dir: str = "~/libs/gigapose"
+    device: str = "cuda"
+    # Number of rendered templates per object (default from gigapose)
+    n_templates: int = 162
+    # Path to the pre-rendered template directory for the target object
+    template_dir: Optional[str] = None
+    # Camera intrinsics [fx, fy, cx, cy] – required for metric pose
+    intrinsics: Optional[List[float]] = None
+
+
+class SkillRouterConfig(BaseModel):
+    # Anthropic model used to plan the skill execution sequence
+    # claude-haiku-4-5-20251001 is fast and cheap for structured planning
+    model: str = "claude-haiku-4-5-20251001"
+    max_tokens: int = 1024
+    temperature: float = 0.0
+    # Maximum number of skills the router may chain per request
+    max_steps: int = 5

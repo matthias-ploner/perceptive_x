@@ -6,6 +6,10 @@ from .skill_configs import (
     ReasoningConfig,
     ReasoningV3Config,
     ClassificationConfig,
+    DetectionConfig,
+    AssemblyConfig,
+    GigaPoseConfig,
+    SkillRouterConfig,
 )
 
 __all__ = [
@@ -16,4 +20,8 @@ __all__ = [
     "ReasoningConfig",
     "ReasoningV3Config",
     "ClassificationConfig",
+    "DetectionConfig",
+    "AssemblyConfig",
+    "GigaPoseConfig",
+    "SkillRouterConfig",
 ]

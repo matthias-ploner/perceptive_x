@@ -25,6 +25,9 @@ dependencies = [
 
     # Vector search (DINOv2 gallery / anomaly detection)
     "faiss-cpu>=1.7",   # see [gpu] extra for CUDA variant
+
+    # LLM client for skill router (reads ANTHROPIC_API_KEY from environment)
+    "anthropic>=0.40",
 ]
 
 [project.optional-dependencies]
@@ -44,6 +47,8 @@ triton = [
 #   Depth Anything 3:  pip install git+https://github.com/ByteDance-Seed/depth-anything-3
 #   SAM2:              pip install git+https://github.com/facebookresearch/sam2
 #   FoundationPose:    see https://github.com/NVlabs/FoundationPose
+#   GigaPose:          git clone https://github.com/nv-nguyen/gigapose ~/libs/gigapose
+#                      pip install -e ~/libs/gigapose
 
 [build-system]
 requires = ["hatchling"]
