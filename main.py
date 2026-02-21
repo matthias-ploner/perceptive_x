@@ -1058,12 +1058,12 @@ def demo_grounding_dino(
 
     # Default: truck (vehicle/industrial inspection task)
     if image_path is None:
-        image_path  = SAM2_IMGS / "truck.jpg"
+        image_path = SAM2_IMGS / "truck.jpg"
         text_prompt = text_prompt or (
             "tire . wheel . headlight . bumper . side mirror . axle"
         )
     else:
-        image_path  = Path(image_path)
+        image_path = Path(image_path)
         text_prompt = text_prompt or "object"
 
     if not Path(image_path).exists():
@@ -1142,8 +1142,16 @@ def _build_nut_tray(
     # Empty slot: dark grey rectangle with a dashed border to signal absence
     blank = np.full((cell_px, cell_px, 3), 30, dtype=np.uint8)
     cv2.rectangle(blank, (8, 8), (cell_px - 9, cell_px - 9), (80, 80, 80), 2)
-    cv2.putText(blank, "MISSING", (cell_px // 2 - 38, cell_px // 2 + 6),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (120, 120, 120), 1, cv2.LINE_AA)
+    cv2.putText(
+        blank,
+        "MISSING",
+        (cell_px // 2 - 38, cell_px // 2 + 6),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        (120, 120, 120),
+        1,
+        cv2.LINE_AA,
+    )
     while len(cells) < total:
         cells.append(blank.copy())
     rows = [np.hstack(cells[r * n_cols : (r + 1) * n_cols]) for r in range(n_rows)]
@@ -1187,10 +1195,10 @@ def demo_assembly_verification(
         else:
             # Fallback: truck image as assembly scene
             image_path = SAM2_IMGS / "truck.jpg"
-            checklist  = checklist or {"headlight": 2, "tire": 2, "mirror": 1}
+            checklist = checklist or {"headlight": 2, "tire": 2, "mirror": 1}
     else:
         image_path = Path(image_path)
-        checklist  = checklist or {}
+        checklist = checklist or {}
 
     if image_path is not None:
         if not Path(image_path).exists():
@@ -1235,9 +1243,7 @@ def demo_assembly_verification(
     # Per-detection breakdown — helps spot false positives / duplicate boxes
     print(f"\n   Per-detection boxes ({len(d['boxes'])} total):")
     cell_px = 256  # matches _build_nut_tray cell_px
-    for i, (box, score, label) in enumerate(
-        zip(d["boxes"], d["scores"], d["labels"])
-    ):
+    for i, (box, score, label) in enumerate(zip(d["boxes"], d["scores"], d["labels"])):
         x1, y1, x2, y2 = box.astype(int)
         cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
         col, row = cx // cell_px, cy // cell_px
@@ -1270,6 +1276,153 @@ def demo_assembly_verification(
     )
 
     out_path = OUT_DIR / "assembly_verification.jpg"
+    cv2.imwrite(str(out_path), vis)
+    print(f"\n   Saved → {out_path}")
+    return result
+
+
+# ---------------------------------------------------------------------------
+# GigaPose demo: template-based 6-DoF pose estimation
+# ---------------------------------------------------------------------------
+
+
+def demo_gigapose(
+    image_path: str | Path | None = None,
+    template_dir: str | Path | None = None,
+    checkpoint: str | Path | None = None,
+    bbox: list | None = None,
+    obj_id: int = 1,
+    device: str | None = None,
+):
+    """
+    6-DoF pose estimation with GigaPose.
+
+    Checks prerequisites and runs inference if everything is in place.
+    Prints clear instructions for any missing component.
+
+    Prerequisites
+    -------------
+    1.  git clone https://github.com/nv-nguyen/gigapose ~/libs/gigapose
+    2.  pip install -e ~/libs/gigapose
+    3.  python ~/libs/gigapose/src/scripts/download_gigapose.py
+    4.  python ~/libs/gigapose/src/scripts/render_custom_templates.py
+        (requires Panda3D and a CAD model)
+
+    Output: output/gigapose_pose.jpg  (query image with pose overlay)
+    """
+    OUT_DIR.mkdir(exist_ok=True)
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    gigapose_root = LIBS / "gigapose"
+
+    print(f"\n── GigaPose  (6-DoF pose)  |  device={device}")
+
+    # ── Prerequisite checks (fail fast with clear messages) ──────────
+    ok = True
+
+    if not gigapose_root.exists():
+        print("  [MISSING] GigaPose repo not found.")
+        print(
+            f"    Clone with:  git clone "
+            "https://github.com/nv-nguyen/gigapose "
+            f"{gigapose_root}"
+        )
+        ok = False
+
+    if ok:
+        try:
+            import sys as _sys
+
+            _sys.path.insert(0, str(gigapose_root))
+            import src.models.gigaPose  # noqa: F401
+        except ImportError as _exc:
+            print(f"  [MISSING] GigaPose import failed: {_exc}")
+            print("    Install missing packages, e.g.:")
+            print("      pip install pytorch_lightning hydra-core " "omegaconf einops")
+            ok = False
+
+    default_ckpt = gigapose_root / "pretrained" / "gigaPose_v1.ckpt"
+    ckpt_path = Path(checkpoint).expanduser() if checkpoint else default_ckpt
+    if ok and not ckpt_path.exists():
+        print(f"  [MISSING] Checkpoint not found: {ckpt_path}")
+        print("    Download:")
+        print("      python ~/libs/gigapose/src/scripts/download_gigapose.py")
+        ok = False
+
+    if template_dir is None:
+        template_dir = MVTEC_NUT / "templates" / "obj_000001"
+    template_dir = Path(template_dir)
+    if ok and not template_dir.exists():
+        print(f"  [MISSING] Template directory not found: {template_dir}")
+        print("    Render templates (requires Panda3D + CAD model):")
+        print("      python ~/libs/gigapose/src/scripts/" "render_custom_templates.py")
+        ok = False
+
+    if not ok:
+        print("\n  Resolve the above and re-run to test GigaPose inference.\n")
+        return None
+
+    # ── All prerequisites met — run inference ────────────────────────
+    if image_path is None:
+        nut_good = MVTEC_NUT / "test/good"
+        paths = sorted(nut_good.glob("*.png"))
+        if not paths:
+            print(f"  [skip] No test images found in {nut_good}")
+            return None
+        image_path = paths[0]
+
+    image_path = Path(image_path)
+    if not image_path.exists():
+        print(f"  [skip] Image not found: {image_path}")
+        return None
+
+    print(f"   image      : {image_path.name}")
+    print(f"   templates  : {template_dir}")
+    print(f"   checkpoint : {ckpt_path.name}")
+
+    image = vs.load_image(str(image_path))
+
+    if bbox is None:
+        h, w = image.shape[:2]
+        bbox = [0, 0, w, h]  # use full image if no detection provided
+
+    skill = vs.SkillRegistry.create(
+        "gigapose",
+        {
+            "device": device,
+            "gigapose_dir": str(gigapose_root),
+            "checkpoint": str(ckpt_path),
+            "template_dir": str(template_dir),
+        },
+    )
+    result = skill(image, bbox=bbox, obj_id=obj_id)
+
+    if not result.success:
+        print(f"   FAILED: {result.error}")
+        return result
+
+    d = result.data
+    R, t = d["rotation"], d["translation"]
+    print(f"\n   Score : {d['score']:.4f}  ({result.inference_time_ms:.0f} ms)")
+    print(f"   R     :\n{R}")
+    print(f"   t     : {t}")
+
+    # Draw pose axes on the image (3D→2D projection)
+    vis = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    if skill.cfg.intrinsics:
+        fx, fy, cx, cy = skill.cfg.intrinsics
+        K_mat = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float32)
+        axis_len = 0.05  # 5 cm
+        axes_3d = np.float32(
+            [[0, 0, 0], [axis_len, 0, 0], [0, axis_len, 0], [0, 0, axis_len]]
+        )
+        rvec, _ = cv2.Rodrigues(R)
+        pts, _ = cv2.projectPoints(axes_3d, rvec, t, K_mat, None)
+        pts = pts.astype(int)
+        origin = tuple(pts[0].ravel())
+        for pt, col in zip(pts[1:], [(0, 0, 255), (0, 255, 0), (255, 0, 0)]):
+            cv2.arrowedLine(vis, origin, tuple(pt.ravel()), col, 2)
+
+    out_path = OUT_DIR / "gigapose_pose.jpg"
     cv2.imwrite(str(out_path), vis)
     print(f"\n   Saved → {out_path}")
     return result
@@ -1359,7 +1512,8 @@ def demo_skill_router(
 if __name__ == "__main__":
     demo_registry()
     print()
-    demo_grounding_dino()
-    demo_assembly_verification()
+    # demo_grounding_dino()
+    # demo_assembly_verification()
+    demo_gigapose()
     # demo_skill_router()
     # demo_bent_optimisation()

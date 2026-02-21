@@ -101,15 +101,23 @@ class AssemblyConfig(BaseModel):
 
 
 class GigaPoseConfig(BaseModel):
-    # Path to cloned gigapose source (added to sys.path at runtime)
+    # Path to cloned gigapose source (added to sys.path at runtime).
+    # setup.cfg declares package_dir = src/, so the importable roots are
+    # models.*, megapose.*, lib3d.*, utils.*, etc. (all under src/).
     gigapose_dir: str = "~/libs/gigapose"
     device: str = "cuda"
     # Number of rendered templates per object (default from gigapose)
     n_templates: int = 162
-    # Path to the pre-rendered template directory for the target object
+    # Path to the BOP-format pre-rendered template directory for the object.
+    # Each object has its own sub-directory with rgb/mask/poses rendered from
+    # 162 viewpoints.  Generate with:
+    #   python ~/libs/gigapose/src/scripts/render_custom_templates.py
     template_dir: Optional[str] = None
     # Camera intrinsics [fx, fy, cx, cy] – required for metric pose
     intrinsics: Optional[List[float]] = None
+    # Path to the downloaded gigaPose_v1.ckpt checkpoint.  Download with:
+    #   python ~/libs/gigapose/src/scripts/download_gigapose.py
+    checkpoint: Optional[str] = None
 
 
 class SkillRouterConfig(BaseModel):
