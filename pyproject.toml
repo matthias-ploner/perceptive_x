@@ -1,0 +1,53 @@
+[project]
+name = "perceptive-x"
+version = "0.1.0"
+description = "Modular Vision AI Skills Library"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # Core numerics & image I/O
+    "numpy>=1.26",
+    "opencv-python>=4.9",
+    "open3d>=0.18",
+    "pillow>=10.0",
+
+    # Config validation
+    "pydantic>=2.0",
+
+    # Deep learning runtime
+    "torch>=2.3",
+    "torchvision>=0.18",
+
+    # HuggingFace ecosystem (depth, dinov2, qwen-vl)
+    "transformers>=4.44",
+    "accelerate>=0.30",
+    "huggingface-hub>=0.23",
+
+    # Vector search (DINOv2 gallery / anomaly detection)
+    "faiss-cpu>=1.7",   # see [gpu] extra for CUDA variant
+]
+
+[project.optional-dependencies]
+# CUDA FAISS (Python 3.12+):  pip install "perceptive-x[gpu]"
+gpu = [
+    "faiss-gpu-cu12>=1.7",
+]
+# Flash Attention for Qwen2.5-VL:  pip install "perceptive-x[flash]"
+flash = [
+    "flash-attn>=2.5",
+]
+# Triton Inference Server backend:  pip install "perceptive-x[triton]"
+triton = [
+    "tritonclient[grpc]>=2.45",
+]
+# Source-only installs (not on PyPI):
+#   Depth Anything 3:  pip install git+https://github.com/ByteDance-Seed/depth-anything-3
+#   SAM2:              pip install git+https://github.com/facebookresearch/sam2
+#   FoundationPose:    see https://github.com/NVlabs/FoundationPose
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["vision_skills"]
