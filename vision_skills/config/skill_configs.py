@@ -108,9 +108,12 @@ class GigaPoseConfig(BaseModel):
     device: str = "cuda"
     # Number of rendered templates per object (default from gigapose)
     n_templates: int = 162
-    # Path to the BOP-format pre-rendered template directory for the object.
-    # Each object has its own sub-directory with rgb/mask/poses rendered from
-    # 162 viewpoints.  Generate with:
+    # Parent directory containing per-object sub-dirs named {obj_id:06d}/
+    # (e.g. 000001/) with RGBA+depth PNG renders (162 views each), plus
+    # object_poses/{obj_id:06d}.npy pose files.
+    # Download pre-rendered BOP templates (LMO/TLESS/YCBV/…) from:
+    #   https://huggingface.co/datasets/nv-nguyen/gigaPose  (templates.zip)
+    # Or render custom objects with:
     #   python ~/libs/gigapose/src/scripts/render_custom_templates.py
     template_dir: Optional[str] = None
     # Camera intrinsics [fx, fy, cx, cy] – required for metric pose

@@ -1,0 +1,223 @@
+user:
+  wandb_api_key: null
+  wandb_project_name: gigapose
+  local_root_dir: ./gigaPose_datasets
+  slurm_root_dir: ./gigaPose_datasets
+machine:
+  trainer:
+    logger:
+      _target_: pytorch_lightning.loggers.TensorBoardLogger
+      save_dir: ${save_dir}/
+      name: ${user.wandb_project_name}
+    _target_: pytorch_lightning.Trainer
+    max_epochs: 1000
+    accelerator: gpu
+    devices:
+    - 0
+    deterministic: false
+    detect_anomaly: false
+    enable_progress_bar: true
+    strategy: ddp
+    precision: 32
+    val_check_interval: 300
+    log_every_n_steps: 1
+    num_sanity_val_steps: 2
+    limit_val_batches: null
+    limit_test_batches: null
+    callbacks: '${oc.dict.values: callback}'
+  name: local
+  batch_size: 12
+  num_workers: 10
+  dryrun: true
+  root_dir: ${user.local_root_dir}
+callback:
+  checkpoint:
+    _target_: pytorch_lightning.callbacks.ModelCheckpoint
+    dirpath: ${save_dir}/checkpoints
+    save_last: true
+    verbose: true
+    save_top_k: -1
+    every_n_train_steps: 1000
+  lr:
+    _target_: pytorch_lightning.callbacks.LearningRateMonitor
+    logging_interval: step
+model:
+  ae_net:
+    _target_: src.models.network.ae_net.AENet
+    model_name: dinov2_vitl14
+    dinov2_model:
+      _target_: torch.hub.load
+      repo_or_dir: facebookresearch/dinov2
+      model: ${model.ae_net.model_name}
+    max_batch_size: 64
+    descriptor_size: 1024
+  ist_net:
+    _target_: src.models.network.ist_net.ISTNet
+    model_name: resnet
+    descriptor_size: 256
+    backbone:
+      _target_: src.models.network.resnet.ResNet
+      config:
+        n_heads: 0
+        input_dim: 3
+        input_size: 256
+        initial_dim: 128
+        block_dims:
+        - 128
+        - 192
+        - 256
+        - 512
+        descriptor_size: ${model.ist_net.descriptor_size}
+    regressor:
+      _target_: src.models.network.ist_net.Regressor
+      descriptor_size: ${model.ist_net.descriptor_size}
+      hidden_dim: 256
+      use_tanh_act: true
+      normalize_output: true
+    max_batch_size: 64
+    pretrained_weights: null
+    checkpoint_key: state_dict
+  refiner:
+    model_name: megapose-1.0-RGB-multi-hypothesis
+    depth_refiner: null
+    models_root: ${machine.root_dir}/pretrained/megapose-models/
+    num_workers: ${machine.num_workers}
+    batch_size_objects: 8
+    batch_size_images: 512
+    n_iterations: 5
+  _target_: src.models.gigaPose.GigaPose
+  model_name: large
+  log_interval: 1000
+  log_dir: ${save_dir}
+  training_loss:
+    contrast_loss:
+      _target_: src.models.loss.InfoNCE
+      tau: 0.1
+    scale_loss:
+      _target_: src.models.loss.ScaleLoss
+      loss: l2
+      log: true
+    inplane_loss:
+      _target_: src.models.loss.InplaneLoss
+      loss: geodesic
+      normalize: false
+  optim_config:
+    loss_type: l1
+    ae_lr: 1.0e-05
+    ist_lr: 0.0001
+    weight_decay: 0.0005
+    warm_up_steps: 200
+    use_gt_masks: true
+    nets_to_train: ${nets_to_train}
+  testing_metric:
+    _target_: src.models.matching.LocalSimilarity
+    k: 5
+    sim_threshold: 0.5
+    patch_threshold: 3
+  checkpoint_path: ${machine.root_dir}/pretrained/gigaPose_v1.ckpt
+data:
+  transform:
+    normalize:
+      _target_: torchvision.transforms.Compose
+      transforms:
+      - _target_: torchvision.transforms.Normalize
+        mean:
+        - 0.48145466
+        - 0.4578275
+        - 0.40821073
+        std:
+        - 0.26862954
+        - 0.26130258
+        - 0.27577711
+    crop_transform:
+      _target_: src.utils.crop.CropResizePad
+      target_size: 224
+    rgb_transform:
+      _target_: megapose.datasets.augmentations.SceneObservationAugmentation
+      transform:
+      - _target_: megapose.datasets.augmentations.SceneObservationAugmentation
+        transform:
+          _target_: megapose.datasets.augmentations.PillowBlur
+          factor_interval:
+          - 1
+          - 3
+        p: 0.4
+      - _target_: megapose.datasets.augmentations.SceneObservationAugmentation
+        transform:
+          _target_: megapose.datasets.augmentations.PillowSharpness
+          factor_interval:
+          - 0.0
+          - 50.0
+        p: 0.3
+      - _target_: megapose.datasets.augmentations.SceneObservationAugmentation
+        transform:
+          _target_: megapose.datasets.augmentations.PillowContrast
+          factor_interval:
+          - 0.2
+          - 50.0
+        p: 0.3
+      - _target_: megapose.datasets.augmentations.SceneObservationAugmentation
+        transform:
+          _target_: megapose.datasets.augmentations.PillowBrightness
+          factor_interval:
+          - 0.1
+          - 6.0
+        p: 0.5
+      - _target_: megapose.datasets.augmentations.SceneObservationAugmentation
+        transform:
+          _target_: megapose.datasets.augmentations.PillowColor
+          factor_interval:
+          - 0.0
+          - 20.0
+        p: 0.3
+      p: 0.8
+    crop_augmentation: false
+    inplane_augmentation: false
+    rgb_augmentation: true
+  test:
+    root_dir: ${machine.root_dir}/datasets/
+    source_url: https://bop.felk.cvut.cz/media/data/bop_datasets/
+    source_cnos_url: https://bop.felk.cvut.cz/media/data/bop_datasets_extra/bop23_default_detections_for_task4.zip
+    unzip_mode: unzip
+    dataloader:
+      _target_: src.dataloader.test.GigaPoseTestSet
+      root_dir: ${machine.root_dir}/datasets/
+      dataset_name: null
+      depth_scale: 10.0
+      transforms: ${data.transform}
+      template_config:
+        dir: ${machine.root_dir}/datasets/templates/
+        level_templates: 1
+        pose_distribution: all
+        scale_factor: 1.0
+        num_templates: 162
+        image_name: OBJECT_ID/VIEW_ID.png
+        pose_name: object_poses/OBJECT_ID.npy
+      test_setting: null
+  train:
+    root_dir: ${machine.root_dir}/datasets/
+    source_url: https://bop.felk.cvut.cz/media/data/bop_datasets/
+    unzip_mode: unzip
+    dataloader:
+      _target_: src.dataloader.train.GigaPoseTrainSet
+      dataset_name: gso
+      depth_scale: 10.0
+      root_dir: ${machine.root_dir}/datasets/
+      transforms: ${data.transform}
+      template_config:
+        dir: ${machine.root_dir}/datasets/templates
+        level_templates: 1
+        pose_distribution: all
+        scale_factor: 10.0
+        num_templates: 162
+        image_name: OBJECT_ID/VIEW_ID.png
+        pose_name: object_poses/OBJECT_ID.npy
+save_dir: ${machine.root_dir}/results/${name_exp}
+name_exp: train
+use_pretrained: true
+train_dataset_id: 0
+nets_to_train: all
+start_idx: null
+end_idx: null
+test_dataset_name: null
+custom_dataset_name: custom

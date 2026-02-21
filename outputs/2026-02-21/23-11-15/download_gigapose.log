@@ -1,0 +1,1 @@
+[2026-02-21 23:11:15,252][__main__][INFO] - Running wget -O gigaPose_datasets/pretrained/gigaPose_v1.ckpt https://huggingface.co/datasets/nv-nguyen/gigaPose/resolve/main/gigaPose_v1.ckpt

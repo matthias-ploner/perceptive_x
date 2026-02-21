@@ -33,16 +33,25 @@ class GigaPoseSkill(BasePoseSkill):
            python ~/libs/gigapose/src/scripts/download_gigapose.py
            # default location: ~/libs/gigapose/pretrained/gigaPose_v1.ckpt
 
-    4. Render templates for your object
-       (needs Panda3D + a .ply/.obj CAD model)::
+    4. Download pre-rendered BOP templates (1.4 GB) **or** render your own::
 
+           # Option A — pre-rendered for LMO / TLESS / YCBV / … (recommended)
+           mkdir -p ~/gigaPose_datasets/datasets/tmp
+           wget -O ~/gigaPose_datasets/datasets/tmp/templates.zip \\
+               https://huggingface.co/datasets/nv-nguyen/gigaPose/resolve/main/templates.zip
+           unzip ~/gigaPose_datasets/datasets/tmp/templates.zip \\
+               -d ~/gigaPose_datasets/datasets/
+
+           # Option B — render custom objects (requires Panda3D + CAD model)
            python ~/libs/gigapose/src/scripts/render_custom_templates.py
 
     Usage::
 
         skill = SkillRegistry.create("gigapose", {
             "checkpoint":    "~/libs/gigapose/pretrained/gigaPose_v1.ckpt",
-            "template_dir":  "/path/to/bop_templates/obj_000001",
+            # Parent directory that contains {obj_id:06d}/ sub-dirs and
+            # object_poses/{obj_id:06d}.npy files (BOP template format).
+            "template_dir":  "~/gigaPose_datasets/datasets/templates/lmo",
             "intrinsics":    [fx, fy, cx, cy],
             "device": "cuda",
         })
@@ -216,7 +225,6 @@ class GigaPoseSkill(BasePoseSkill):
         import pandas as pd
         import src.megapose.utils.tensor_collection as tc
         from torchvision.transforms.functional import to_tensor
-        import cv2
 
         image, mask, K, bbox, obj_id, template_dir = processed
         device = self.cfg.device
@@ -227,30 +235,38 @@ class GigaPoseSkill(BasePoseSkill):
         if cache_key not in self._template_cache:
             self._load_templates(template_dir, obj_id, cache_key)
 
-        # 2. Crop query image to bbox
-        model_size = 224  # GigaPose default input resolution
-        x1, y1, x2, y2 = bbox
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(w_img, x2), min(h_img, y2)
-        bw, bh = max(x2 - x1, 1), max(y2 - y1, 1)
+        # 2. Crop query image to bbox using CropResizePad (isotropic scale +
+        #    padding) — must match the template preprocessing exactly, because
+        #    forward_recovery asserts M[0,0] == M[1,1] (no anisotropic scaling).
+        from src.utils.crop import CropResizePad
+        import torchvision.transforms as T
 
-        crop_rgb = cv2.resize(image[y1:y2, x1:x2], (model_size, model_size))
-        crop_msk = cv2.resize(mask[y1:y2, x1:x2], (model_size, model_size))
+        img_tensor = to_tensor(image).to(device)            # [3, H, W]  float
+        msk_tensor = torch.from_numpy(
+            (mask > 0).astype(np.float32)
+        ).unsqueeze(0).to(device)                           # [1, H, W]
 
-        # Affine from full image to crop (scale + translate)
-        sx = model_size / bw
-        sy = model_size / bh
-        M_np = np.array(
-            [[sx, 0, -x1 * sx], [0, sy, -y1 * sy], [0, 0, 1]],
-            dtype=np.float32,
+        bbox_t = torch.tensor(
+            [bbox], dtype=torch.long, device=device         # [1, 4]  xyxy int
         )
+        crop = CropResizePad(target_size=224)
 
-        tar_img = to_tensor(crop_rgb).unsqueeze(0).to(device)   # [1,3,H,W]
-        tar_mask = torch.from_numpy(
-            (crop_msk > 0).astype(np.float32)
-        ).unsqueeze(0).to(device)                                # [1,H,W]
-        tar_K = torch.from_numpy(K).unsqueeze(0).to(device)     # [1,3,3]
-        tar_M = torch.from_numpy(M_np).unsqueeze(0).to(device)  # [1,3,3]
+        cropped_rgb  = crop(bbox_t, img_tensor.unsqueeze(0))        # images [1,3,224,224], M [1,3,3]
+        rgba_for_msk = torch.cat([img_tensor, msk_tensor], dim=0)   # [4, H, W]
+        cropped_msk  = crop(bbox_t, rgba_for_msk.unsqueeze(0))      # images [1,4,224,224]
+
+        tar_img  = cropped_rgb["images"]                             # [1, 3, 224, 224]
+        tar_mask = cropped_msk["images"][:, 3]                       # [1, 224, 224]
+        tar_M    = cropped_rgb["M"]                                  # [1, 3, 3]
+
+        # Apply ImageNet normalisation to the query (same as templates)
+        normalize = T.Normalize(
+            mean=[0.48145466, 0.4578275,  0.40821073],
+            std= [0.26862954, 0.26130258, 0.27577711],
+        )
+        tar_img = torch.stack([normalize(tar_img[i]) for i in range(len(tar_img))])
+
+        tar_K = torch.from_numpy(K).unsqueeze(0).to(device)         # [1, 3, 3]
 
         infos = pd.DataFrame(
             {"label": [obj_id], "scene_id": [0], "view_id": [0]}
@@ -354,58 +370,96 @@ class GigaPoseSkill(BasePoseSkill):
     def _load_templates(
         self, template_dir: str, obj_id: int, cache_key: str
     ) -> None:
-        """Load pre-rendered templates and pre-compute AE/IST features."""
+        """Load pre-rendered templates and pre-compute AE/IST features.
+
+        template_dir is the **parent** directory that contains:
+          - {obj_id:06d}/000000.png … 000161.png   (RGBA renders)
+          - {obj_id:06d}/000000_depth.png …         (depth renders)
+          - object_poses/{obj_id:06d}.npy            (162 SE(3) poses)
+
+        This structure is produced by the gigapose render scripts and matches
+        the layout inside the official templates.zip download.
+        """
         import torch
-        from src.dataloader.template import TemplateSet
-        from src.models.poses import ObjectPoseRecovery
-        from src.utils.batch import BatchedData
-        import src.megapose.utils.tensor_collection as tc
         import pandas as pd
+        import torchvision.transforms as T
+        from src.custom_megapose.template_dataset import TemplateDataset
+        from src.models.poses import ObjectPoseRecovery
+        from src.utils.crop import CropResizePad
+        import src.megapose.utils.tensor_collection as tc
 
         device = self.cfg.device
+        n_templates = self.cfg.n_templates
 
-        # TemplateSet maps a BOP-format template directory to a dataset.
-        # template_dir should contain per-object subdirs (obj_000001, …)
-        # or point directly to a single-object directory.
-        template_dataset = TemplateSet(
-            template_dir=template_dir,
-            obj_id=obj_id,
-            device=device,
+        # Minimal config that mirrors configs/data/bop.yaml template_config.
+        class _TCfg:
+            dir = template_dir
+            num_templates = n_templates
+            pose_name = "object_poses/OBJECT_ID.npy"
+            scale_factor = 1.0   # BOP convention (metres)
+
+        dataset = TemplateDataset.from_config([{"obj_id": obj_id}], _TCfg())
+        tdata = dataset.get_object_templates(str(obj_id))
+        raw, poses = tdata.read_test_mode()
+        # raw["rgba"]  [N, 4, H, W] float  (RGBA)
+        # raw["box"]   [N, 4]       int    (xyxy bounding boxes in the render)
+        # poses        [N, 4, 4]           (SE3 camera←object)
+
+        # Crop-resize RGBA to 224×224 (same as the TemplateSet dataloader).
+        crop = CropResizePad(target_size=224)
+        images = raw["rgba"].to(device)   # [N, 4, H, W]
+        boxes = raw["box"].to(device)     # [N, 4]
+        cropped = crop(boxes, images)
+        rgb  = cropped["images"][:, :3]   # [N, 3, 224, 224]
+        mask = cropped["images"][:, 3]    # [N, 224, 224]
+        M    = cropped["M"]               # [N, 3, 3]
+
+        # ImageNet / CLIP normalisation (same as DINOv2 preprocess).
+        normalize = T.Normalize(
+            mean=[0.48145466, 0.4578275,  0.40821073],
+            std= [0.26862954, 0.26130258, 0.27577711],
         )
+        rgb = torch.stack([normalize(rgb[i]) for i in range(len(rgb))])
 
-        names = ["rgb", "mask", "K", "M", "poses"]
-        extra = ["ae_features", "ist_features"]
-        td = {n: BatchedData(None) for n in names + extra}
+        poses = poses.to(device)          # [N, 4, 4]
 
+        # Fixed Panda3D renderer intrinsics — same hardcoded value as
+        # TemplateDataset.K and call_panda3d.py.
+        K_np = np.array(
+            [572.4114, 0.0, 320.0, 0.0, 573.57043, 240.0, 0.0, 0.0, 1.0],
+            dtype=np.float32,
+        ).reshape(3, 3)
+        K = torch.from_numpy(K_np).to(device)
+
+        # Pre-compute AE and IST features for all template views.
         with torch.no_grad():
-            for idx in range(len(template_dataset)):
-                item = template_dataset[idx]
-                templates = item.rgb.to(device)
-                td["ae_features"].append(self._model.ae_net(templates))
-                td["ist_features"].append(
-                    self._model.ist_net.forward_by_chunk(templates)
-                )
-                for n in names:
-                    td[n].append(getattr(item, n).to(device))
+            ae_feats  = self._model.ae_net(rgb)                      # [N, D]
+            ist_feats = self._model.ist_net.forward_by_chunk(rgb)    # [N, …]
 
-        for n in names + ["ae_features", "ist_features"]:
-            td[n].stack()
-            td[n] = td[n].data
-
-        template_data = tc.PandasTensorCollection(
-            infos=pd.DataFrame(), **td
+        # Build PandasTensorCollection with a leading object dimension of 1.
+        # forward_recovery indexes as template_data[tar_label - 1], so
+        # shapes must be [N_objects=1, N_templates, …].
+        template_ptc = tc.PandasTensorCollection(
+            infos=pd.DataFrame(),
+            ae_features=ae_feats.unsqueeze(0),    # [1, N, D]
+            ist_features=ist_feats.unsqueeze(0),  # [1, N, …]
+            rgb=rgb.unsqueeze(0),                 # [1, N, 3, 224, 224]
+            mask=mask.unsqueeze(0),               # [1, N, 224, 224]
+            M=M.unsqueeze(0),                     # [1, N, 3, 3]
+            K=K.unsqueeze(0),                     # [1, 3, 3]
+            poses=poses.unsqueeze(0),             # [1, N, 4, 4]
         )
         pose_recovery = ObjectPoseRecovery(
-            template_K=td["K"],
-            template_Ms=td["M"],
-            template_poses=td["poses"],
+            template_K=K.unsqueeze(0),            # [1, 3, 3]
+            template_Ms=M.unsqueeze(0),           # [1, N, 3, 3]
+            template_poses=poses.unsqueeze(0),    # [1, N, 4, 4]
         )
 
         self._template_cache[cache_key] = {
-            "data": template_data,
+            "data": template_ptc,
             "recovery": pose_recovery,
         }
         self.logger.info(
-            f"Templates loaded for obj_id={obj_id} "
+            f"Templates loaded for obj_id={obj_id} ({n_templates} views) "
             f"from {Path(template_dir).name}"
         )

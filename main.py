@@ -1348,13 +1348,24 @@ def demo_gigapose(
         print("      python ~/libs/gigapose/src/scripts/download_gigapose.py")
         ok = False
 
+    # template_dir is the PARENT directory (contains 000001/ sub-dirs and
+    # object_poses/ — BOP template format).  Default: LMO dataset templates.
+    _gigapose_data = Path(__file__).parent / "gigaPose_datasets"
     if template_dir is None:
-        template_dir = MVTEC_NUT / "templates" / "obj_000001"
+        template_dir = _gigapose_data / "datasets" / "templates" / "lmo"
     template_dir = Path(template_dir)
     if ok and not template_dir.exists():
         print(f"  [MISSING] Template directory not found: {template_dir}")
-        print("    Render templates (requires Panda3D + CAD model):")
-        print("      python ~/libs/gigapose/src/scripts/" "render_custom_templates.py")
+        print("    Download pre-rendered BOP templates (1.4 GB):")
+        print(
+            f"      mkdir -p {_gigapose_data}/datasets/tmp\n"
+            f"      wget -O {_gigapose_data}/datasets/tmp/templates.zip \\\n"
+            "        https://huggingface.co/datasets/nv-nguyen/gigaPose"
+            "/resolve/main/templates.zip\n"
+            f"      unzip {_gigapose_data}/datasets/tmp/templates.zip"
+            f" -d {_gigapose_data}/datasets/"
+        )
+        print("    (or render custom objects with render_custom_templates.py)")
         ok = False
 
     if not ok:
@@ -1362,17 +1373,25 @@ def demo_gigapose(
         return None
 
     # ── All prerequisites met — run inference ────────────────────────
+    # Use the first template render (000001/000000.png) as a smoke-test image
+    # when no real query image is provided.  This self-referential query is
+    # not meaningful pose-wise but verifies the full inference pipeline.
     if image_path is None:
-        nut_good = MVTEC_NUT / "test/good"
-        paths = sorted(nut_good.glob("*.png"))
-        if not paths:
-            print(f"  [skip] No test images found in {nut_good}")
-            return None
-        image_path = paths[0]
+        render_png = template_dir / f"{obj_id:06d}" / "000000.png"
+        if render_png.exists():
+            import PIL.Image as _PILImage
+            _rgba = np.array(_PILImage.open(render_png).convert("RGBA"))
+            image_path = OUT_DIR / "gigapose_template_query.png"
+            _PILImage.fromarray(_rgba[:, :, :3]).save(image_path)
+        else:
+            # Fall back to MVTec nut images if available
+            paths = sorted((MVTEC_NUT / "test/good").glob("*.png"))
+            if paths:
+                image_path = paths[0]
 
-    image_path = Path(image_path)
-    if not image_path.exists():
-        print(f"  [skip] Image not found: {image_path}")
+    image_path = Path(image_path) if image_path else None
+    if not image_path or not image_path.exists():
+        print(f"  [skip] No test image found (checked {template_dir}/{obj_id:06d}/000000.png)")
         return None
 
     print(f"   image      : {image_path.name}")
